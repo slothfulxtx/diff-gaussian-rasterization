@@ -1,6 +1,6 @@
 # Differential Gaussian Rasterization
 
-**What's new** : Except for the RGB image, we also support render depth map (both forward and backward process) compared with the [original repository](https://github.com/graphdeco-inria/diff-gaussian-rasterization).
+**What's new** : Except for the RGB image, we also support render depth map and alpha map (both forward and backward process) compared with the [original repository](https://github.com/graphdeco-inria/diff-gaussian-rasterization).
 
 We modify the repo name as **diff_gauss** to avoid dependecy conflict with the original version. You can install our repo by executing the following command lines
 ```shell
@@ -13,7 +13,7 @@ Here's an example of our modified differential gaussian rasterization repo
 ```python
 from diff_gauss import GaussianRasterizationSettings, GaussianRasterizer
 
-rendered_image, rendered_depth, radii = rasterizer(
+rendered_image, rendered_depth, rendered_alpha, radii = rasterizer(
     means3D = means3D,
     means2D = means2D,
     shs = shs,
