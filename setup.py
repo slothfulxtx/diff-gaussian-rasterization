@@ -17,7 +17,7 @@ os.path.dirname(os.path.abspath(__file__))
 setup(
     name="diff_gauss",
     packages=['diff_gauss'],
-    version="1.0.5",
+    version="1.0.7",
     ext_modules=[
         CUDAExtension(
             name="diff_gauss._C",

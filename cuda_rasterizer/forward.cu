@@ -151,6 +151,54 @@ __device__ void computeCov3D(const glm::vec3 scale, float mod, const glm::vec4 r
 	cov3D[5] = Sigma[2][2];
 }
 
+// Forward method for converting scale and rotation properties of each
+// Gaussian to a 3D norm vector in world space.
+__device__ void computeNorm3D(const glm::vec3 scale, float mod, const glm::vec4 rot, float* norm3D, int idx, const glm::vec3* means, glm::vec3 campos)
+{
+	// Create scaling matrix
+	glm::mat3 S = glm::mat3(1.0f);
+	S[0][0] = mod * scale.x;
+	S[1][1] = mod * scale.y;
+	S[2][2] = mod * scale.z;
+
+	// Normalize quaternion to get valid rotation
+	glm::vec4 q = rot;// / glm::length(rot);
+	float r = q.x;
+	float x = q.y;
+	float y = q.z;
+	float z = q.w;
+
+	// Compute rotation matrix from quaternion
+	glm::mat3 R = glm::mat3(
+		1.f - 2.f * (y * y + z * z), 2.f * (x * y - r * z), 2.f * (x * z + r * y),
+		2.f * (x * y + r * z), 1.f - 2.f * (x * x + z * z), 2.f * (y * z - r * x),
+		2.f * (x * z - r * y), 2.f * (y * z + r * x), 1.f - 2.f * (x * x + y * y)
+	);
+
+	glm::vec3 norm; 
+	if(scale.x > scale.z && scale.y > scale.z)
+	{
+		norm = glm::vec3(0.0, 0.0, 1.0);
+	}
+	else if(scale.x > scale.y && scale.z > scale.y)
+	{
+		norm = glm::vec3(0.0, 1.0, 0.0);
+	}
+	else
+	{
+		norm = glm::vec3(1.0, 0.0, 0.0);
+	}
+	norm = R * norm;
+
+	glm::vec3 raydir = means[idx] - campos;
+	if(glm::dot(raydir, norm) > 1e-6)
+		norm = -norm;
+
+	norm3D[0] = norm.x;
+	norm3D[1] = norm.y;
+	norm3D[2] = norm.z;
+}
+
 // Perform initial steps for each Gaussian prior to rasterization.
 template<int C>
 __global__ void preprocessCUDA(int P, int D, int M,
@@ -161,7 +209,8 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	const float* opacities,
 	const float* shs,
 	bool* clamped,
-	const float* cov3D_precomp,
+	const float* cov3Ds_precomp,
+	const float* norm3Ds_precomp,
 	const float* colors_precomp,
 	const float* viewmatrix,
 	const float* projmatrix,
@@ -173,6 +222,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	float2* points_xy_image,
 	float* depths,
 	float* cov3Ds,
+	float* norm3Ds,
 	float* rgb,
 	float4* conic_opacity,
 	const dim3 grid,
@@ -202,9 +252,9 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	// If 3D covariance matrix is precomputed, use it, otherwise compute
 	// from scaling and rotation parameters. 
 	const float* cov3D;
-	if (cov3D_precomp != nullptr)
+	if (cov3Ds_precomp != nullptr)
 	{
-		cov3D = cov3D_precomp + idx * 6;
+		cov3D = cov3Ds_precomp + idx * 6;
 	}
 	else
 	{
@@ -212,6 +262,16 @@ __global__ void preprocessCUDA(int P, int D, int M,
 		cov3D = cov3Ds + idx * 6;
 	}
 
+	const float* norm3D;
+	if (norm3Ds_precomp != nullptr)
+	{
+		norm3D = norm3Ds_precomp + idx * 3;
+	}
+	else
+	{
+		computeNorm3D(scales[idx], scale_modifier, rotations[idx], norm3Ds + idx * 3, idx, (glm::vec3*)orig_points, *cam_pos);
+		norm3D = norm3Ds + idx * 3;
+	}
 	// Compute 2D screen-space covariance matrix
 	float3 cov = computeCov2D(p_orig, focal_x, focal_y, tan_fovx, tan_fovy, cov3D, viewmatrix);
 
@@ -266,13 +326,15 @@ renderCUDA(
 	int W, int H,
 	const float2* __restrict__ points_xy_image,
 	const float* __restrict__ features,
+	const float* __restrict__ norms,
 	const float* __restrict__ depths,
 	const float4* __restrict__ conic_opacity,
 	float* __restrict__ out_alpha,
 	uint32_t* __restrict__ n_contrib,
 	const float* __restrict__ bg_color,
 	float* __restrict__ out_color,
-	float* __restrict__ out_depth)
+	float* __restrict__ out_depth,
+	float* __restrict__ out_norm)
 {
 	// Identify current tile and associated min/max pixel range.
 	auto block = cg::this_thread_block();
@@ -304,6 +366,7 @@ renderCUDA(
 	uint32_t last_contributor = 0;
 	float C[CHANNELS] = { 0 };
 	float D = 0;
+	float N[3] = {0};
 
 	// Iterate over batches until all done or range is complete
 	for (int i = 0; i < rounds; i++, toDo -= BLOCK_SIZE)
@@ -357,6 +420,8 @@ renderCUDA(
 			for (int ch = 0; ch < CHANNELS; ch++)
 				C[ch] += features[collected_id[j] * CHANNELS + ch] * alpha * T;
 			D += depths[collected_id[j]] * alpha * T;
+			for (int ch = 0; ch < 3; ch++)
+				N[ch] += norms[collected_id[j] * 3 + ch] * alpha * T;
 			T = test_T;
 
 			// Keep track of last range entry to update this
@@ -374,6 +439,9 @@ renderCUDA(
 		for (int ch = 0; ch < CHANNELS; ch++)
 			out_color[ch * H * W + pix_id] = C[ch] + T * bg_color[ch];
 		out_depth[pix_id] = D;
+		float len = sqrt(N[0]*N[0] + N[1]*N[1] + N[2]*N[2]) + 1e-6;
+		for (int ch = 0; ch < 3; ch++)
+			out_norm[ch * H * W + pix_id] = N[ch] / len;
 	}
 }
 
@@ -384,13 +452,15 @@ void FORWARD::render(
 	int W, int H,
 	const float2* means2D,
 	const float* colors,
+	const float* norms,
 	const float* depths,
 	const float4* conic_opacity,
 	float* out_alpha,
 	uint32_t* n_contrib,
 	const float* bg_color,
 	float* out_color,
-	float* out_depth)
+	float* out_depth,
+	float* out_norm)
 {
 	renderCUDA<NUM_CHANNELS> << <grid, block >> > (
 		ranges,
@@ -398,13 +468,15 @@ void FORWARD::render(
 		W, H,
 		means2D,
 		colors,
+		norms,
 		depths,
 		conic_opacity,
 		out_alpha,
 		n_contrib,
 		bg_color,
 		out_color,
-		out_depth);
+		out_depth,
+		out_norm);
 }
 
 void FORWARD::preprocess(int P, int D, int M,
@@ -415,7 +487,8 @@ void FORWARD::preprocess(int P, int D, int M,
 	const float* opacities,
 	const float* shs,
 	bool* clamped,
-	const float* cov3D_precomp,
+	const float* cov3Ds_precomp,
+	const float* norm3Ds_precomp,
 	const float* colors_precomp,
 	const float* viewmatrix,
 	const float* projmatrix,
@@ -427,6 +500,7 @@ void FORWARD::preprocess(int P, int D, int M,
 	float2* means2D,
 	float* depths,
 	float* cov3Ds,
+	float* norm3Ds,
 	float* rgb,
 	float4* conic_opacity,
 	const dim3 grid,
@@ -442,7 +516,8 @@ void FORWARD::preprocess(int P, int D, int M,
 		opacities,
 		shs,
 		clamped,
-		cov3D_precomp,
+		cov3Ds_precomp,
+		norm3Ds_precomp,
 		colors_precomp,
 		viewmatrix, 
 		projmatrix,
@@ -454,6 +529,7 @@ void FORWARD::preprocess(int P, int D, int M,
 		means2D,
 		depths,
 		cov3Ds,
+		norm3Ds,
 		rgb,
 		conic_opacity,
 		grid,
