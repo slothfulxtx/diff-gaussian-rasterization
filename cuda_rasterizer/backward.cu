@@ -340,6 +340,59 @@ __device__ void computeCov3D(int idx, const glm::vec3 scale, float mod, const gl
 	*dL_drot = float4{ dL_dq.x, dL_dq.y, dL_dq.z, dL_dq.w };//dnormvdv(float4{ rot.x, rot.y, rot.z, rot.w }, float4{ dL_dq.x, dL_dq.y, dL_dq.z, dL_dq.w });
 }
 
+
+__device__ void computeNorm3D(int idx, const glm::vec3 scale, float mod, const glm::vec4 rot, const glm::vec3 norm3D, const glm::vec3* dL_dnorm3Ds, glm::vec3* dL_dscales, glm::vec4* dL_drots)
+{
+	// Recompute (intermediate) results for the 3D covariance computation.
+	glm::vec4 q = rot;// / glm::length(rot);
+	float r = q.x;
+	float x = q.y;
+	float y = q.z;
+	float z = q.w;
+
+	glm::mat3 R = glm::mat3(
+		1.f - 2.f * (y * y + z * z), 2.f * (x * y - r * z), 2.f * (x * z + r * y),
+		2.f * (x * y + r * z), 1.f - 2.f * (x * x + z * z), 2.f * (y * z - r * x),
+		2.f * (x * z - r * y), 2.f * (y * z + r * x), 1.f - 2.f * (x * x + y * y)
+	);
+
+	glm::vec3 dL_dnorm3D = dL_dnorm3Ds[idx];
+	
+	glm::vec3 norm; 
+	if(scale.x > scale.z && scale.y > scale.z)
+	{
+		norm = glm::vec3(0.0, 0.0, 1.0);
+	}
+	else if(scale.x > scale.y && scale.z > scale.y)
+	{
+		norm = glm::vec3(0.0, 1.0, 0.0);
+	}
+	else
+	{
+		norm = glm::vec3(1.0, 0.0, 0.0);
+	}
+
+	if(glm::dot(R * norm, norm3D) < 0)
+		norm = -norm;
+	
+	glm::mat3 dL_dR = glm::mat3(
+		dL_dnorm3D.x * norm.x, dL_dnorm3D.x * norm.y, dL_dnorm3D.x * norm.z,
+		dL_dnorm3D.y * norm.x, dL_dnorm3D.y * norm.y, dL_dnorm3D.y * norm.z,
+		dL_dnorm3D.z * norm.x, dL_dnorm3D.z * norm.y, dL_dnorm3D.z * norm.z
+	);
+	glm::mat3 dL_dRt = glm::transpose(dL_dR);
+
+	// Gradients of loss w.r.t. normalized quaternion
+	glm::vec4 dL_dq;
+	dL_dq.x = 2 * z * (dL_dRt[0][1] - dL_dRt[1][0]) + 2 * y * (dL_dRt[2][0] - dL_dRt[0][2]) + 2 * x * (dL_dRt[1][2] - dL_dRt[2][1]);
+	dL_dq.y = 2 * y * (dL_dRt[1][0] + dL_dRt[0][1]) + 2 * z * (dL_dRt[2][0] + dL_dRt[0][2]) + 2 * r * (dL_dRt[1][2] - dL_dRt[2][1]) - 4 * x * (dL_dRt[2][2] + dL_dRt[1][1]);
+	dL_dq.z = 2 * x * (dL_dRt[1][0] + dL_dRt[0][1]) + 2 * r * (dL_dRt[2][0] - dL_dRt[0][2]) + 2 * z * (dL_dRt[1][2] + dL_dRt[2][1]) - 4 * y * (dL_dRt[2][2] + dL_dRt[0][0]);
+	dL_dq.w = 2 * r * (dL_dRt[0][1] - dL_dRt[1][0]) + 2 * x * (dL_dRt[2][0] + dL_dRt[0][2]) + 2 * y * (dL_dRt[1][2] + dL_dRt[2][1]) - 4 * z * (dL_dRt[1][1] + dL_dRt[0][0]);
+
+	// Gradients of loss w.r.t. unnormalized quaternion
+	dL_drots[idx] += dL_dq;
+}
+
 // Backward pass of the preprocessing steps, except
 // for the covariance computation and inversion
 // (those are handled by a previous kernel call)
@@ -349,6 +402,8 @@ __global__ void preprocessCUDA(
 	const float3* means,
 	const int* radii,
 	const float* shs,
+	const glm::vec3* norm3Ds,
+	bool is_norm3Ds_precomp,
 	const bool* clamped,
 	const glm::vec3* scales,
 	const glm::vec4* rotations,
@@ -361,6 +416,7 @@ __global__ void preprocessCUDA(
 	float* dL_dcolor,
 	float* dL_ddepth,
 	float* dL_dcov3D,
+	glm::vec3* dL_dnorm3D,
 	float* dL_dsh,
 	glm::vec3* dL_dscale,
 	glm::vec4* dL_drot)
@@ -409,6 +465,10 @@ __global__ void preprocessCUDA(
 	// Compute gradient updates due to computing covariance from scale/rotation
 	if (scales)
 		computeCov3D(idx, scales[idx], scale_modifier, rotations[idx], dL_dcov3D, dL_dscale, dL_drot);
+		
+	if (is_norm3Ds_precomp)
+		computeNorm3D(idx, scales[idx], scale_modifier, rotations[idx], norm3Ds[idx], dL_dnorm3D, dL_dscale, dL_drot);
+	
 }
 
 // Backward version of the rendering procedure.
@@ -423,16 +483,19 @@ renderCUDA(
 	const float4* __restrict__ conic_opacity,
 	const float* __restrict__ colors,
 	const float* __restrict__ depths,
+	const float* __restrict__ norms,
 	const float* __restrict__ accum_alphas,
 	const uint32_t* __restrict__ n_contrib,
 	const float* __restrict__ dL_dpixels,
 	const float* __restrict__ dL_dpixel_depths,
+	const float* __restrict__ dL_dpixel_norms,
 	const float* __restrict__ dL_dpixel_alphas,
 	float3* __restrict__ dL_dmean2D,
 	float4* __restrict__ dL_dconic2D,
 	float* __restrict__ dL_dopacity,
 	float* __restrict__ dL_dcolors,
-	float* __restrict__ dL_ddepths)
+	float* __restrict__ dL_ddepths,
+	float* __restrict__ dL_dnorm3Ds)
 {
 	// We rasterize again. Compute necessary block info.
 	auto block = cg::this_thread_block();
@@ -456,6 +519,7 @@ renderCUDA(
 	__shared__ float4 collected_conic_opacity[BLOCK_SIZE];
 	__shared__ float collected_colors[C * BLOCK_SIZE];
 	__shared__ float collected_depths[BLOCK_SIZE];
+	__shared__ float collected_norms[3 * BLOCK_SIZE];
 
 	// In the forward, we stored the final value for T, the
 	// product of all (1 - alpha) factors. 
@@ -469,20 +533,25 @@ renderCUDA(
 
 	float accum_rec[C] = { 0 };
 	float accum_red = 0;
+	float accum_ren[3] = { 0 };
 	float accum_rea = 0;
 	float dL_dpixel[C];
 	float dL_dpixel_depth;
+	float dL_dpixel_norm[3];
 	float dL_dpixel_alpha;
 	if (inside) 
 	{
 		for (int i = 0; i < C; i++)
 			dL_dpixel[i] = dL_dpixels[i * H * W + pix_id];
 		dL_dpixel_depth = dL_dpixel_depths[pix_id];
+		for (int i = 0; i < 3; i++)
+			dL_dpixel_norm[i] = dL_dpixel_norms[i * H * W + pix_id];
 		dL_dpixel_alpha = dL_dpixel_alphas[pix_id];
 	}
 	float last_alpha = 0;
 	float last_color[C] = { 0 };
 	float last_depth = 0;
+	float last_norm[3] = { 0 };
 	// Gradient of pixel coordinate w.r.t. normalized 
 	// screen-space viewport corrdinates (-1 to 1)
 	const float ddelx_dx = 0.5 * W;
@@ -503,6 +572,8 @@ renderCUDA(
 			collected_conic_opacity[block.thread_rank()] = conic_opacity[coll_id];
 			for (int i = 0; i < C; i++)
 				collected_colors[i * BLOCK_SIZE + block.thread_rank()] = colors[coll_id * C + i];
+			for (int i = 0; i < 3; i++)
+				collected_norms[i * BLOCK_SIZE + block.thread_rank()] = norms[coll_id * 3 + i];
 			collected_depths[block.thread_rank()] = depths[coll_id];
 		}
 		block.sync();
@@ -532,6 +603,7 @@ renderCUDA(
 			T = T / (1.f - alpha);
 			const float dchannel_dcolor = alpha * T;
 			const float dpixel_depth_ddepth = alpha * T;
+			const float dpixel_norm_dnorm = alpha * T;
 
 			// Propagate gradients to per-Gaussian colors and keep
 			// gradients w.r.t. alpha (blending factor for a Gaussian/pixel
@@ -558,6 +630,21 @@ renderCUDA(
 			dL_dalpha += (dep-accum_red) * dL_dpixel_depth;
 			atomicAdd(&(dL_ddepths[global_id]), dpixel_depth_ddepth * dL_dpixel_depth);
 			
+			for (int ch = 0; ch < 3; ch++)
+			{
+				const float n = collected_norms[ch * BLOCK_SIZE + j];
+				// Update last norm (to be used in the next iteration)
+				accum_ren[ch] = last_alpha * last_norm[ch] + (1.f - last_alpha) * accum_ren[ch];
+				last_norm[ch] = n;
+
+				const float dL_dnormch = dL_dpixel_norm[ch];
+				dL_dalpha += (n - accum_ren[ch]) * dL_dnormch;
+				// Update the gradients w.r.t. norm of the Gaussian. 
+				// Atomic, since this pixel is just one of potentially
+				// many that were affected by this Gaussian.
+				atomicAdd(&(dL_dnorm3Ds[global_id * 3 + ch]), dpixel_norm_dnorm * dL_dnormch);
+			}
+
 			accum_rea = last_alpha + (1.f - last_alpha) * accum_rea;
 			dL_dalpha += (1 - accum_rea) * dL_dpixel_alpha;
 
@@ -608,6 +695,8 @@ void BACKWARD::preprocess(
 	const glm::vec4* rotations,
 	const float scale_modifier,
 	const float* cov3Ds,
+	const glm::vec3* norm3Ds,
+	bool is_norm3Ds_precomp,
 	const float* viewmatrix,
 	const float* projmatrix,
 	const float focal_x, float focal_y,
@@ -619,6 +708,7 @@ void BACKWARD::preprocess(
 	float* dL_dcolor,
 	float* dL_ddepth,
 	float* dL_dcov3D,
+	glm::vec3* dL_dnorm3D,
 	float* dL_dsh,
 	glm::vec3* dL_dscale,
 	glm::vec4* dL_drot)
@@ -649,6 +739,8 @@ void BACKWARD::preprocess(
 		(float3*)means3D,
 		radii,
 		shs,
+		(glm::vec3*)norm3Ds,
+		is_norm3Ds_precomp,
 		clamped,
 		(glm::vec3*)scales,
 		(glm::vec4*)rotations,
@@ -661,6 +753,7 @@ void BACKWARD::preprocess(
 		dL_dcolor,
 		dL_ddepth,
 		dL_dcov3D,
+		(glm::vec3*)dL_dnorm3D,
 		dL_dsh,
 		dL_dscale,
 		dL_drot);
@@ -676,16 +769,19 @@ void BACKWARD::render(
 	const float4* conic_opacity,
 	const float* colors,
 	const float* depths,
+	const float* norms,
 	const float* accum_alphas,
 	const uint32_t* n_contrib,
 	const float* dL_dpixels,
 	const float* dL_dpixel_depths,
+	const float* dL_dpixel_norms,
 	const float* dL_dpixel_alphas,
 	float3* dL_dmean2D,
 	float4* dL_dconic2D,
 	float* dL_dopacity,
 	float* dL_dcolors,
-	float* dL_ddepths)
+	float* dL_ddepths,
+	float* dL_dnorm3Ds)
 {
 	renderCUDA<NUM_CHANNELS> << <grid, block >> >(
 		ranges,
@@ -696,14 +792,17 @@ void BACKWARD::render(
 		conic_opacity,
 		colors,
 		depths,
+		norms,
 		accum_alphas,
 		n_contrib,
 		dL_dpixels,
 		dL_dpixel_depths,
+		dL_dpixel_norms,
 		dL_dpixel_alphas,
 		dL_dmean2D,
 		dL_dconic2D,
 		dL_dopacity,
 		dL_dcolors,
-		dL_ddepths);
+		dL_ddepths,
+		dL_dnorm3Ds);
 }

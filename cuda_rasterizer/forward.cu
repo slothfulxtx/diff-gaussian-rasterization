@@ -191,7 +191,7 @@ __device__ void computeNorm3D(const glm::vec3 scale, float mod, const glm::vec4 
 	norm = R * norm;
 
 	glm::vec3 raydir = means[idx] - campos;
-	if(glm::dot(raydir, norm) > 1e-6)
+	if(glm::dot(raydir, norm) > 0)
 		norm = -norm;
 
 	norm3D[0] = norm.x;
@@ -439,9 +439,9 @@ renderCUDA(
 		for (int ch = 0; ch < CHANNELS; ch++)
 			out_color[ch * H * W + pix_id] = C[ch] + T * bg_color[ch];
 		out_depth[pix_id] = D;
-		float len = sqrt(N[0]*N[0] + N[1]*N[1] + N[2]*N[2]) + 1e-6;
-		for (int ch = 0; ch < 3; ch++)
-			out_norm[ch * H * W + pix_id] = N[ch] / len;
+		// float len = sqrt(N[0]*N[0] + N[1]*N[1] + N[2]*N[2]) + 1e-6;
+		// for (int ch = 0; ch < 3; ch++)
+		// 	out_norm[ch * H * W + pix_id] = N[ch] / len;
 	}
 }
 

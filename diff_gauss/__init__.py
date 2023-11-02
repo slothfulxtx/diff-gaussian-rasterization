@@ -30,7 +30,7 @@ def rasterize_gaussians(
     norm3Ds_precomp,
     raster_settings,
 ):
-    return _RasterizeGaussians.apply(
+    color, depth, norm, alpha, radii = _RasterizeGaussians.apply(
         means3D,
         means2D,
         sh,
@@ -42,6 +42,10 @@ def rasterize_gaussians(
         norm3Ds_precomp,
         raster_settings,
     )
+    
+    norm = torch.nn.functional.normalize(norm, p=2, dim=0)
+    # 3, H, W
+    return color, depth, norm, alpha, radii
 
 class _RasterizeGaussians(torch.autograd.Function):
     @staticmethod
@@ -118,12 +122,14 @@ class _RasterizeGaussians(torch.autograd.Function):
                 rotations, 
                 raster_settings.scale_modifier, 
                 cov3Ds_precomp, 
+                norm3Ds_precomp,
                 raster_settings.viewmatrix, 
                 raster_settings.projmatrix, 
                 raster_settings.tanfovx, 
                 raster_settings.tanfovy, 
                 grad_out_color, 
                 grad_out_depth,
+                grad_out_norm,
                 grad_out_alpha,
                 sh, 
                 raster_settings.sh_degree, 
@@ -139,13 +145,13 @@ class _RasterizeGaussians(torch.autograd.Function):
         if raster_settings.debug:
             cpu_args = cpu_deep_copy_tuple(args) # Copy them before they can be corrupted
             try:
-                grad_means2D, grad_colors_precomp, grad_opacities, grad_means3D, grad_cov3Ds_precomp, grad_sh, grad_scales, grad_rotations = _C.rasterize_gaussians_backward(*args)
+                grad_means2D, grad_colors_precomp, grad_opacities, grad_means3D, grad_cov3Ds_precomp, grad_norm3Ds_precomp, grad_sh, grad_scales, grad_rotations = _C.rasterize_gaussians_backward(*args)
             except Exception as ex:
                 torch.save(cpu_args, "snapshot_bw.dump")
                 print("\nAn error occured in backward. Writing snapshot_bw.dump for debugging.\n")
                 raise ex
         else:
-             grad_means2D, grad_colors_precomp, grad_opacities, grad_means3D, grad_cov3Ds_precomp, grad_sh, grad_scales, grad_rotations = _C.rasterize_gaussians_backward(*args)
+            grad_means2D, grad_colors_precomp, grad_opacities, grad_means3D, grad_cov3Ds_precomp, grad_norm3Ds_precomp, grad_sh, grad_scales, grad_rotations = _C.rasterize_gaussians_backward(*args)
 
         grads = (
             grad_means3D,
@@ -156,7 +162,7 @@ class _RasterizeGaussians(torch.autograd.Function):
             grad_scales,
             grad_rotations,
             grad_cov3Ds_precomp,
-            None, # TODO: norm3Ds backward support
+            grad_norm3Ds_precomp,
             None,
         )
 
