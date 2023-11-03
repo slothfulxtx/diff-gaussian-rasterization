@@ -440,8 +440,8 @@ renderCUDA(
 			out_color[ch * H * W + pix_id] = C[ch] + T * bg_color[ch];
 		out_depth[pix_id] = D;
 		// float len = sqrt(N[0]*N[0] + N[1]*N[1] + N[2]*N[2]) + 1e-6;
-		// for (int ch = 0; ch < 3; ch++)
-		// 	out_norm[ch * H * W + pix_id] = N[ch] / len;
+		for (int ch = 0; ch < 3; ch++)
+			out_norm[ch * H * W + pix_id] = N[ch];
 	}
 }
 
