@@ -341,7 +341,7 @@ __device__ void computeCov3D(int idx, const glm::vec3 scale, float mod, const gl
 }
 
 
-__device__ void computeNorm3D(int idx, const glm::vec3 scale, float mod, const glm::vec4 rot, const glm::vec3 norm3D, const glm::vec3* dL_dnorm3Ds, glm::vec3* dL_dscales, glm::vec4* dL_drots)
+__device__ void computeNorm3D(int idx, const glm::vec3 scale, const glm::vec4 rot, const glm::vec3 norm3D, const glm::vec3 dL_dnorm3D, glm::vec3* dL_dscales, glm::vec4* dL_drots)
 {
 	// Recompute (intermediate) results for the 3D covariance computation.
 	glm::vec4 q = rot;// / glm::length(rot);
@@ -356,8 +356,6 @@ __device__ void computeNorm3D(int idx, const glm::vec3 scale, float mod, const g
 		2.f * (x * z - r * y), 2.f * (y * z + r * x), 1.f - 2.f * (x * x + y * y)
 	);
 
-	glm::vec3 dL_dnorm3D = dL_dnorm3Ds[idx];
-	
 	glm::vec3 norm; 
 	if(scale.x > scale.z && scale.y > scale.z)
 	{
@@ -466,8 +464,8 @@ __global__ void preprocessCUDA(
 	if (scales)
 		computeCov3D(idx, scales[idx], scale_modifier, rotations[idx], dL_dcov3D, dL_dscale, dL_drot);
 		
-	if (is_norm3Ds_precomp)
-		computeNorm3D(idx, scales[idx], scale_modifier, rotations[idx], norm3Ds[idx], dL_dnorm3D, dL_dscale, dL_drot);
+	if (!is_norm3Ds_precomp)
+		computeNorm3D(idx, scales[idx], rotations[idx], norm3Ds[idx], dL_dnorm3D[idx], dL_dscale, dL_drot);
 	
 }
 

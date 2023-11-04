@@ -214,8 +214,10 @@ class GaussianRasterizer(nn.Module):
             colors_precomp = torch.Tensor([])
 
         if scales is None:
+            raise ValueError('To support norm and depth prediction, scales == None is not allowed')
             scales = torch.Tensor([])
         if rotations is None:
+            raise ValueError('To support norm and depth prediction, rotations == None is not allowed')
             rotations = torch.Tensor([])
         if cov3Ds_precomp is None:
             cov3Ds_precomp = torch.Tensor([])
