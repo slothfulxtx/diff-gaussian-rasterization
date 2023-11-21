@@ -475,25 +475,28 @@ __global__ void __launch_bounds__(BLOCK_X * BLOCK_Y)
 renderCUDA(
 	const uint2* __restrict__ ranges,
 	const uint32_t* __restrict__ point_list,
-	int W, int H,
+	int W, int H, int ED,
 	const float* __restrict__ bg_color,
 	const float2* __restrict__ points_xy_image,
 	const float4* __restrict__ conic_opacity,
 	const float* __restrict__ colors,
 	const float* __restrict__ depths,
 	const float* __restrict__ norms,
+	const float* __restrict__ extras,
 	const float* __restrict__ accum_alphas,
 	const uint32_t* __restrict__ n_contrib,
 	const float* __restrict__ dL_dpixels,
 	const float* __restrict__ dL_dpixel_depths,
 	const float* __restrict__ dL_dpixel_norms,
 	const float* __restrict__ dL_dpixel_alphas,
+	const float* __restrict__ dL_dpixel_extras,
 	float3* __restrict__ dL_dmean2D,
 	float4* __restrict__ dL_dconic2D,
 	float* __restrict__ dL_dopacity,
 	float* __restrict__ dL_dcolors,
 	float* __restrict__ dL_ddepths,
-	float* __restrict__ dL_dnorm3Ds)
+	float* __restrict__ dL_dnorm3Ds,
+	float* __restrict__ dL_dextras)
 {
 	// We rasterize again. Compute necessary block info.
 	auto block = cg::this_thread_block();
@@ -518,6 +521,7 @@ renderCUDA(
 	__shared__ float collected_colors[C * BLOCK_SIZE];
 	__shared__ float collected_depths[BLOCK_SIZE];
 	__shared__ float collected_norms[3 * BLOCK_SIZE];
+	__shared__ float collected_extras[MAX_EXTRA_DIMS * BLOCK_SIZE];
 
 	// In the forward, we stored the final value for T, the
 	// product of all (1 - alpha) factors. 
@@ -533,10 +537,12 @@ renderCUDA(
 	float accum_red = 0;
 	float accum_ren[3] = { 0 };
 	float accum_rea = 0;
+	float accum_ree[MAX_EXTRA_DIMS] = { 0 };
 	float dL_dpixel[C];
 	float dL_dpixel_depth;
 	float dL_dpixel_norm[3];
 	float dL_dpixel_alpha;
+	float dL_dpixel_extra[MAX_EXTRA_DIMS];
 	if (inside) 
 	{
 		for (int i = 0; i < C; i++)
@@ -545,11 +551,14 @@ renderCUDA(
 		for (int i = 0; i < 3; i++)
 			dL_dpixel_norm[i] = dL_dpixel_norms[i * H * W + pix_id];
 		dL_dpixel_alpha = dL_dpixel_alphas[pix_id];
+		for (int i = 0; i < ED; i++)
+			dL_dpixel_extra[i] = dL_dpixel_extras[i * H * W + pix_id];
 	}
 	float last_alpha = 0;
 	float last_color[C] = { 0 };
 	float last_depth = 0;
 	float last_norm[3] = { 0 };
+	float last_extra[MAX_EXTRA_DIMS] = { 0 };
 	// Gradient of pixel coordinate w.r.t. normalized 
 	// screen-space viewport corrdinates (-1 to 1)
 	const float ddelx_dx = 0.5 * W;
@@ -573,6 +582,8 @@ renderCUDA(
 			for (int i = 0; i < 3; i++)
 				collected_norms[i * BLOCK_SIZE + block.thread_rank()] = norms[coll_id * 3 + i];
 			collected_depths[block.thread_rank()] = depths[coll_id];
+			for (int i = 0; i < ED; i++)
+				collected_extras[i * BLOCK_SIZE + block.thread_rank()] = extras[coll_id * ED + i];
 		}
 		block.sync();
 
@@ -599,9 +610,11 @@ renderCUDA(
 				continue;
 
 			T = T / (1.f - alpha);
-			const float dchannel_dcolor = alpha * T;
-			const float dpixel_depth_ddepth = alpha * T;
-			const float dpixel_norm_dnorm = alpha * T;
+			const float weight = alpha * T;
+			// const float dchannel_dcolor = alpha * T;
+			// const float dpixel_depth_ddepth = alpha * T;
+			// const float dpixel_norm_dnorm = alpha * T;
+			// const float dpixel_extra_dextra = alpha * T;
 
 			// Propagate gradients to per-Gaussian colors and keep
 			// gradients w.r.t. alpha (blending factor for a Gaussian/pixel
@@ -620,13 +633,13 @@ renderCUDA(
 				// Update the gradients w.r.t. color of the Gaussian. 
 				// Atomic, since this pixel is just one of potentially
 				// many that were affected by this Gaussian.
-				atomicAdd(&(dL_dcolors[global_id * C + ch]), dchannel_dcolor * dL_dchannel);
+				atomicAdd(&(dL_dcolors[global_id * C + ch]), weight * dL_dchannel);
 			}
 			const float dep = collected_depths[j];
 			accum_red = last_alpha * last_depth + (1.f - last_alpha) * accum_red;
 			last_depth = dep;
 			dL_dalpha += (dep-accum_red) * dL_dpixel_depth;
-			atomicAdd(&(dL_ddepths[global_id]), dpixel_depth_ddepth * dL_dpixel_depth);
+			atomicAdd(&(dL_ddepths[global_id]), weight * dL_dpixel_depth);
 			
 			for (int ch = 0; ch < 3; ch++)
 			{
@@ -640,7 +653,22 @@ renderCUDA(
 				// Update the gradients w.r.t. norm of the Gaussian. 
 				// Atomic, since this pixel is just one of potentially
 				// many that were affected by this Gaussian.
-				atomicAdd(&(dL_dnorm3Ds[global_id * 3 + ch]), dpixel_norm_dnorm * dL_dnormch);
+				atomicAdd(&(dL_dnorm3Ds[global_id * 3 + ch]), weight * dL_dnormch);
+			}
+
+			for (int ch = 0; ch < ED; ch++)
+			{
+				const float e = collected_extras[ch * BLOCK_SIZE + j];
+				// Update last norm (to be used in the next iteration)
+				accum_ree[ch] = last_alpha * last_extra[ch] + (1.f - last_alpha) * accum_ree[ch];
+				last_extra[ch] = e;
+
+				const float dL_dextrach = dL_dpixel_extra[ch];
+				dL_dalpha += (e - accum_ree[ch]) * dL_dextrach;
+				// Update the gradients w.r.t. norm of the Gaussian. 
+				// Atomic, since this pixel is just one of potentially
+				// many that were affected by this Gaussian.
+				atomicAdd(&(dL_dextras[global_id * ED + ch]), weight * dL_dextrach);
 			}
 
 			accum_rea = last_alpha + (1.f - last_alpha) * accum_rea;
@@ -761,46 +789,52 @@ void BACKWARD::render(
 	const dim3 grid, const dim3 block,
 	const uint2* ranges,
 	const uint32_t* point_list,
-	int W, int H,
+	int W, int H, int ED,
 	const float* bg_color,
 	const float2* means2D,
 	const float4* conic_opacity,
 	const float* colors,
 	const float* depths,
 	const float* norms,
+	const float* extras,
 	const float* accum_alphas,
 	const uint32_t* n_contrib,
 	const float* dL_dpixels,
 	const float* dL_dpixel_depths,
 	const float* dL_dpixel_norms,
 	const float* dL_dpixel_alphas,
+	const float* dL_dpixel_extras,
 	float3* dL_dmean2D,
 	float4* dL_dconic2D,
 	float* dL_dopacity,
 	float* dL_dcolors,
 	float* dL_ddepths,
-	float* dL_dnorm3Ds)
+	float* dL_dnorm3Ds,
+	float* dL_dextras)
 {
 	renderCUDA<NUM_CHANNELS> << <grid, block >> >(
 		ranges,
 		point_list,
-		W, H,
+		W, H, ED,
 		bg_color,
 		means2D,
 		conic_opacity,
 		colors,
 		depths,
 		norms,
+		extras,
 		accum_alphas,
 		n_contrib,
 		dL_dpixels,
 		dL_dpixel_depths,
 		dL_dpixel_norms,
 		dL_dpixel_alphas,
+		dL_dpixel_extras,
 		dL_dmean2D,
 		dL_dconic2D,
 		dL_dopacity,
 		dL_dcolors,
 		dL_ddepths,
-		dL_dnorm3Ds);
+		dL_dnorm3Ds,
+		dL_dextras);
 }

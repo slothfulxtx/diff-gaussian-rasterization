@@ -17,6 +17,7 @@
 
 #define BLOCK_SIZE (BLOCK_X * BLOCK_Y)
 #define NUM_WARPS (BLOCK_SIZE/32)
+#define MAX_EXTRA_DIMS 8
 
 // Spherical harmonics coefficients
 __device__ const float SH_C0 = 0.28209479177387814f;
