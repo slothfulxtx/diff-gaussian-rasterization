@@ -66,7 +66,7 @@ class _RasterizeGaussians(torch.autograd.Function):
         raster_settings,
     ):
         # restrict the length of extra attr values to avoid dynamically sized shared memory allocation
-        assert extra_attrs.shape[0] == 0 or extra_attrs.shape[1] <= 8
+        assert extra_attrs.shape[0] == 0 or extra_attrs.shape[1] <= 34
         # Restructure arguments the way that the C++ lib expects them
         args = (
             raster_settings.bg, 
