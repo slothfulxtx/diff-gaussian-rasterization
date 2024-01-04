@@ -71,7 +71,7 @@ __device__ glm::vec3 computeColorFromSH(int idx, int deg, int max_coeffs, const 
 }
 
 // Forward version of 2D covariance matrix computation
-__device__ float3 computeCov2D(const float3& mean, float focal_x, float focal_y, float tan_fovx, float tan_fovy, const float* cov3D, const float* viewmatrix)
+__device__ float3 computeCov2D(const float3& mean, float focal_x, float focal_y, float tan_fovx, float tan_fovy, const float* cov3D, const float* viewmatrix, glm::mat3 & T)
 {
 	// The following models the steps outlined by equations 29
 	// and 31 in "EWA Splatting" (Zwicker et al., 2002). 
@@ -96,7 +96,7 @@ __device__ float3 computeCov2D(const float3& mean, float focal_x, float focal_y,
 		viewmatrix[1], viewmatrix[5], viewmatrix[9],
 		viewmatrix[2], viewmatrix[6], viewmatrix[10]);
 
-	glm::mat3 T = W * J;
+	T = W * J;
 
 	glm::mat3 Vrk = glm::mat3(
 		cov3D[0], cov3D[1], cov3D[2],
@@ -115,7 +115,7 @@ __device__ float3 computeCov2D(const float3& mean, float focal_x, float focal_y,
 // Forward method for converting scale and rotation properties of each
 // Gaussian to a 3D covariance matrix in world space. Also takes care
 // of quaternion normalization.
-__device__ void computeCov3D(const glm::vec3 scale, float mod, const glm::vec4 rot, float* cov3D)
+__device__ void computeCov3D(const glm::vec3 scale, float mod, const glm::vec4 rot, float* cov3D, glm::mat3& Sigma)
 {
 	// Create scaling matrix
 	glm::mat3 S = glm::mat3(1.0f);
@@ -140,7 +140,7 @@ __device__ void computeCov3D(const glm::vec3 scale, float mod, const glm::vec4 r
 	glm::mat3 M = S * R;
 
 	// Compute 3D world covariance matrix Sigma
-	glm::mat3 Sigma = glm::transpose(M) * M;
+	Sigma = glm::transpose(M) * M;
 
 	// Covariance is symmetric, only store upper right
 	cov3D[0] = Sigma[0][0];
@@ -151,9 +151,23 @@ __device__ void computeCov3D(const glm::vec3 scale, float mod, const glm::vec4 r
 	cov3D[5] = Sigma[2][2];
 }
 
+__device__ void print_vec3(const char* name, const glm::vec3 v){
+	printf("%s = (%f %f %f)\n", name, v.x, v.y, v.z);
+}
+
+__device__ void print_mat3(const char* name, const glm::mat3 m){
+	printf("%s = \n", name);
+	for(int u=0;u<3;u++){
+		for(int v=0;v<3;v++)
+			printf("%f ", m[u][v]);
+		printf("\n");
+	}
+	printf("\n");
+}
+
 // Forward method for converting scale and rotation properties of each
 // Gaussian to a 3D norm vector in world space.
-__device__ void computeNorm3D(const glm::vec3 scale, float mod, const glm::vec4 rot, float* norm3D, int idx, const glm::vec3* means, glm::vec3 campos)
+__device__ void computeNorm3D(const glm::vec3 scale, float mod, const glm::vec4 rot, float* norm3D, int idx, const glm::vec3* means, glm::vec3 campos, glm::vec3 &udir, glm::vec3 &vdir, float & us, float & vs, const glm::mat3 Sigma)
 {
 	// Create scaling matrix
 	glm::mat3 S = glm::mat3(1.0f);
@@ -179,20 +193,42 @@ __device__ void computeNorm3D(const glm::vec3 scale, float mod, const glm::vec4 
 	if(scale.x > scale.z && scale.y > scale.z)
 	{
 		norm = glm::vec3(0.0, 0.0, 1.0);
+		udir = glm::vec3(1.0, 0.0, 0.0);
+		vdir = glm::vec3(0.0, 1.0, 0.0);
+		us = mod * scale.x;
+		vs = mod * scale.y;
 	}
 	else if(scale.x > scale.y && scale.z > scale.y)
 	{
 		norm = glm::vec3(0.0, 1.0, 0.0);
+		udir = glm::vec3(1.0, 0.0, 0.0);
+		vdir = glm::vec3(0.0, 0.0, 1.0);
+		us = mod * scale.x;
+		vs = mod * scale.z;
 	}
 	else
 	{
 		norm = glm::vec3(1.0, 0.0, 0.0);
+		udir = glm::vec3(0.0, 1.0, 0.0);
+		vdir = glm::vec3(0.0, 0.0, 1.0);
+		us = mod * scale.y;
+		vs = mod * scale.z;
 	}
 	norm = glm::transpose(R) * norm;
-
+	udir = R * udir;
+	vdir = R * vdir;
+	
 	glm::vec3 raydir = means[idx] - campos;
 	if(glm::dot(raydir, norm) > 0)
 		norm = -norm;
+
+	if(idx == 0) {
+		print_vec3("norm", norm);
+		print_mat3("Sigma", Sigma);
+		float value = glm::dot(norm, Sigma * norm);
+		printf("%f %f %f %f\n", value, scale.x, scale.y, scale.z);
+		assert(false);
+	}
 
 	norm3D[0] = norm.x;
 	norm3D[1] = norm.y;
@@ -252,28 +288,64 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	// If 3D covariance matrix is precomputed, use it, otherwise compute
 	// from scaling and rotation parameters. 
 	const float* cov3D;
+	glm::mat3 sigma;
 	if (cov3Ds_precomp != nullptr)
 	{
 		cov3D = cov3Ds_precomp + idx * 6;
 	}
 	else
 	{
-		computeCov3D(scales[idx], scale_modifier, rotations[idx], cov3Ds + idx * 6);
+		computeCov3D(scales[idx], scale_modifier, rotations[idx], cov3Ds + idx * 6, sigma);
 		cov3D = cov3Ds + idx * 6;
 	}
 
 	const float* norm3D;
+
+	glm::vec3 udir, vdir;
+	float us, vs;
 	if (norm3Ds_precomp != nullptr)
 	{
 		norm3D = norm3Ds_precomp + idx * 3;
 	}
 	else
 	{
-		computeNorm3D(scales[idx], scale_modifier, rotations[idx], norm3Ds + idx * 3, idx, (glm::vec3*)orig_points, *cam_pos);
+		computeNorm3D(scales[idx], scale_modifier, rotations[idx], norm3Ds + idx * 3, idx, (glm::vec3*)orig_points, *cam_pos, udir, vdir, us, vs, sigma);
 		norm3D = norm3Ds + idx * 3;
 	}
+	glm::mat3 T;
 	// Compute 2D screen-space covariance matrix
-	float3 cov = computeCov2D(p_orig, focal_x, focal_y, tan_fovx, tan_fovy, cov3D, viewmatrix);
+	float3 cov = computeCov2D(p_orig, focal_x, focal_y, tan_fovx, tan_fovy, cov3D, viewmatrix, T);
+	
+	if(idx == 0) {
+		printf("cov = [%f %f | %f %f]\n", cov.x, cov.y, cov.y, cov.z);
+		float mm = 0.5f * (cov.x + cov.z);
+		float l1 = mm + sqrt(max(0.1f, mm * mm - (cov.x * cov.z - cov.y * cov.y)));
+		float l2 = mm - sqrt(max(0.1f, mm * mm - (cov.x * cov.z - cov.y * cov.y)));
+		printf("cov-l1 = [%f %f | %f %f]\n", cov.x-l1, cov.y, cov.y, cov.z-l1);
+		printf("cov-l2 = [%f %f | %f %f]\n", cov.x-l2, cov.y, cov.y, cov.z-l2);
+		glm::mat2 covl1 = glm::mat2(
+			cov.x-l1, cov.y, cov.y, cov.z-l1
+		), covl2 = glm::mat2(
+			cov.x-l2, cov.y, cov.y, cov.z-l2
+		);
+		printf("udir = %f %f %f\n", udir.x, udir.y, udir.z);
+		printf("vdir = %f %f %f\n", vdir.x, vdir.y, vdir.z);
+		udir = T * udir;
+		vdir = T * vdir;
+		printf("udir = %f %f %f\n", udir.x, udir.y, udir.z);
+		printf("vdir = %f %f %f\n", vdir.x, vdir.y, vdir.z);
+		glm::vec2 ud = glm::vec2(udir.x, udir.y), vd = glm::vec2(vdir.x, vdir.y);
+		glm::vec2 result = covl1 * ud;
+		printf("result = %f %f\n", result.x, result.y);
+		result = covl2 * ud;
+		printf("result = %f %f\n", result.x, result.y);
+		result = covl1 * vd;
+		printf("result = %f %f\n", result.x, result.y);
+		result = covl2 * vd;
+		printf("result = %f %f\n", result.x, result.y);
+		
+		assert(false);
+	}
 
 	// Invert covariance (EWA algorithm)
 	float det = (cov.x * cov.z - cov.y * cov.y);
