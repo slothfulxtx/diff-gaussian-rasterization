@@ -58,7 +58,7 @@ RasterizeGaussiansCUDA(
   const bool debug)
 {
   if (means3D.ndimension() != 2 || means3D.size(1) != 3) {
-  AT_ERROR("means3D must have dimensions (num_points, 3)");
+    AT_ERROR("means3D must have dimensions (num_points, 3)");
   }
   
   const int P = means3D.size(0);
