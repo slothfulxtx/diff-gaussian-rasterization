@@ -1,18 +1,20 @@
 # Differential Gaussian Rasterization
 
-**What's new** : Except for the RGB image, we also support render depth map, alpha map, normal map and extra per-Gaussian attributes (both forward and backward process) compared with the [original repository](https://github.com/graphdeco-inria/diff-gaussian-rasterization).
+**What's new** : Except for the RGB image, we also support render depth map, alpha map, normal map, extra per-Gaussian attributes and **camera extrinsic matrix**(view matrix) (both forward and backward process) compared with the [original repository](https://github.com/graphdeco-inria/diff-gaussian-rasterization).
+
+**Warning** : The gradient w.r.t. camera pose haven't been fully validated. If you find any bugs, leave a message in the issues. Thank you!
 
 We modify the dependency name as **diff_gauss** to avoid dependecy conflict with the original version. You can install our repo by executing the following command lines
 ```shell
-git clone --recurse-submodules https://github.com/slothfulxtx/diff-gaussian-rasterization.git 
+git clone -b pose --recurse-submodules https://github.com/slothfulxtx/diff-gaussian-rasterization.git 
 cd diff-gaussian-rasterization
 python setup.py install
 ```
 
 Here's an example of our modified differential gaussian rasterization repo
 ```python
-from diff_gauss import GaussianRasterizationSettings, GaussianRasterizer
-
+from diff_gauss_pose import GaussianRasterizationSettings, GaussianRasterizer
+# Notably, the proj_matrix in GaussianRasterizationSettings should be set as the real projection_matrix (intrinsic matrix), not the full_proj_transform which combines both the extrinsic and instrinsic matrixes
 rendered_image, rendered_depth, rendered_norm, rendered_alpha, radii, extra = rasterizer(
     means3D = means3D,
     means2D = means2D,
@@ -22,7 +24,8 @@ rendered_image, rendered_depth, rendered_norm, rendered_alpha, radii, extra = ra
     scales = scales,
     rotations = rotations,
     cov3D_precomp = cov3D_precomp,
-    extra_attrs = extra_attrs
+    extra_attrs = extra_attrs,
+    viewmatrix = viewmatrix
 )
 ```
 
