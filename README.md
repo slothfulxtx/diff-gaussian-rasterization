@@ -2,6 +2,8 @@
 
 **What's new** : Except for the RGB image, we also support render depth map, alpha map, normal map and extra per-Gaussian attributes (both forward and backward process) compared with the [original repository](https://github.com/graphdeco-inria/diff-gaussian-rasterization).
 
+:mega: We recently support computing the gradient w.r.t. camera pose. However, this feature hasn't been fully validated, thus we don't merge it into the main branch. You can switch to pose branch for more information. If you find any bugs, leave a message in the issues. Thank you!
+
 We modify the dependency name as **diff_gauss** to avoid dependecy conflict with the original version. You can install our repo by executing the following command lines
 ```shell
 git clone --recurse-submodules https://github.com/slothfulxtx/diff-gaussian-rasterization.git 
