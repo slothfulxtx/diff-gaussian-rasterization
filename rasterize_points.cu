@@ -132,7 +132,7 @@ RasterizeGaussiansCUDA(
   return std::make_tuple(rendered, out_color, out_depth, out_norm, out_alpha, radii, out_extra, geomBuffer, binningBuffer, imgBuffer);
 }
 
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
  RasterizeGaussiansBackwardCUDA(
   const torch::Tensor& background,
   const torch::Tensor& means3D,
@@ -191,6 +191,10 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
     dL_dextra_attrs = torch::zeros({P, F}, means3D.options());
   else
     dL_dextra_attrs = torch::empty({0}, means3D.options());
+  torch::Tensor dL_dviewmatrix = torch::zeros({4, 4}, means3D.options());
+  torch::Tensor dL_dprojmatrix = torch::zeros({4, 4}, means3D.options());
+  torch::Tensor dL_dcampos = torch::zeros({3}, means3D.options());
+  
   if(P != 0)
   {  
     CudaRasterizer::Rasterizer::backward(P, degree, M, R, F,
@@ -232,10 +236,13 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
       dL_dscales.contiguous().data<float>(),
       dL_drotations.contiguous().data<float>(),
       dL_dextra_attrs.contiguous().data<float>(),
+      dL_dviewmatrix.contiguous().data<float>(),
+      dL_dprojmatrix.contiguous().data<float>(),
+      dL_dcampos.contiguous().data<float>(),
       debug);
   }
 
-  return std::make_tuple(dL_dmeans2D, dL_dcolors, dL_dopacity, dL_dmeans3D, dL_dcov3D, dL_dnorm3D, dL_dsh, dL_dscales, dL_drotations, dL_dextra_attrs);
+  return std::make_tuple(dL_dmeans2D, dL_dcolors, dL_dopacity, dL_dmeans3D, dL_dcov3D, dL_dnorm3D, dL_dsh, dL_dscales, dL_drotations, dL_dextra_attrs, dL_dviewmatrix, dL_dprojmatrix, dL_dcampos);
 }
 
 torch::Tensor markVisible(
