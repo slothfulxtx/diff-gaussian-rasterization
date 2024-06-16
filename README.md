@@ -4,7 +4,7 @@
 
 **Warning** : The gradient w.r.t. camera pose haven't been fully validated. If you find any bugs, leave a message in the issues. Thank you!
 
-We modify the dependency name as **diff_gauss** to avoid dependecy conflict with the original version. You can install our repo by executing the following command lines
+We modify the dependency name as **diff_gauss_pose** to avoid dependecy conflict with the original version. You can install our repo by executing the following command lines
 ```shell
 git clone -b pose --recurse-submodules https://github.com/slothfulxtx/diff-gaussian-rasterization.git 
 cd diff-gaussian-rasterization
