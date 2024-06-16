@@ -152,6 +152,8 @@ class _RasterizeGaussians(torch.autograd.Function):
                 binningBuffer,
                 imgBuffer,
                 alpha,
+                raster_settings.enable_cov_grad,
+                raster_settings.enable_sh_grad,
                 raster_settings.debug)
 
         # Compute gradients for relevant tensors by invoking backward method
@@ -166,7 +168,9 @@ class _RasterizeGaussians(torch.autograd.Function):
         else:
             grad_means2D, grad_colors_precomp, grad_opacities, grad_means3D, grad_cov3Ds_precomp, grad_norm3Ds_precomp, grad_sh, grad_scales, grad_rotations, grad_extra_attrs, grad_viewmatrix, grad_projmatrix, grad_campos = _C.rasterize_gaussians_backward(*args)
 
-        grad_viewmatrix = grad_viewmatrix + grad_projmatrix @ raster_settings.projmatrix
+        # D = W * X
+        # dL/dW = dL/dD * dD/dW = dL/dD * X^T
+        grad_viewmatrix = grad_viewmatrix + grad_projmatrix @ raster_settings.projmatrix.transpose(0, 1)
 
         grads = (
             grad_means3D,
@@ -197,6 +201,8 @@ class GaussianRasterizationSettings(NamedTuple):
     sh_degree : int
     prefiltered : bool
     debug : bool
+    enable_cov_grad: bool
+    enable_sh_grad: bool
 
 class GaussianRasterizer(nn.Module):
     def __init__(self, raster_settings):

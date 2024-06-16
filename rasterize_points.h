@@ -68,6 +68,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
   const torch::Tensor& binningBuffer,
   const torch::Tensor& imageBuffer,
   const torch::Tensor& out_alpha,
+  const bool enable_cov_grad,
+  const bool enable_sh_grad,
   const bool debug);
 
 torch::Tensor markVisible(

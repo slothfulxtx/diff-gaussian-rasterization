@@ -161,6 +161,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
   const torch::Tensor& binningBuffer,
   const torch::Tensor& imageBuffer,
   const torch::Tensor& out_alpha,
+  const bool enable_cov_grad,
+  const bool enable_sh_grad,
   const bool debug) 
 {
   const int P = means3D.size(0);
@@ -239,6 +241,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
       dL_dviewmatrix.contiguous().data<float>(),
       dL_dprojmatrix.contiguous().data<float>(),
       dL_dcampos.contiguous().data<float>(),
+      enable_cov_grad,
+      enable_sh_grad,
       debug);
   }
 

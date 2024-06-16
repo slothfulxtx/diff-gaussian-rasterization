@@ -15,6 +15,8 @@ Here's an example of our modified differential gaussian rasterization repo
 ```python
 from diff_gauss_pose import GaussianRasterizationSettings, GaussianRasterizer
 # Notably, the proj_matrix in GaussianRasterizationSettings should be set as the real projection_matrix (intrinsic matrix), not the full_proj_transform which combines both the extrinsic and instrinsic matrixes
+# It's also worth noting that three parts contributes to the gradient of loss w.r.t. camera view matrix, including mean2D, cov2D, and SH coefficients. For the last two part, computing the gradients may slow down the coverage speed of camera pose. 
+# Thus I support pass two options in the settings to specify whether these two parts is computed during backward, namely enable_cov_grad and enable_sh_grad.
 rendered_image, rendered_depth, rendered_norm, rendered_alpha, radii, extra = rasterizer(
     means3D = means3D,
     means2D = means2D,

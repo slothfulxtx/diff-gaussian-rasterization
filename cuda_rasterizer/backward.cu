@@ -17,7 +17,7 @@ namespace cg = cooperative_groups;
 
 // Backward pass for conversion of spherical harmonics to RGB for
 // each Gaussian.
-__device__ void computeColorFromSH(int idx, int deg, int max_coeffs, const glm::vec3* means, glm::vec3 campos, const float* shs, const bool* clamped, const glm::vec3* dL_dcolor, glm::vec3* dL_dmeans, glm::vec3* dL_dshs, float* dL_dcampos)
+__device__ void computeColorFromSH(int idx, int deg, int max_coeffs, const glm::vec3* means, glm::vec3 campos, const float* shs, const bool* clamped, const glm::vec3* dL_dcolor, glm::vec3* dL_dmeans, glm::vec3* dL_dshs, float* dL_dcampos, const bool enable_sh_grad)
 {
   // Compute intermediate values, as it is done during forward
   glm::vec3 pos = means[idx];
@@ -132,10 +132,11 @@ __device__ void computeColorFromSH(int idx, int deg, int max_coeffs, const glm::
   // Account for normalization of direction
   float3 dL_dmean = dnormvdv(float3{ dir_orig.x, dir_orig.y, dir_orig.z }, float3{ dL_ddir.x, dL_ddir.y, dL_ddir.z });
 
-  dL_dcampos[0] += -dL_dmean.x;
-  dL_dcampos[1] += -dL_dmean.y;
-  dL_dcampos[2] += -dL_dmean.z;
-
+  if(enable_sh_grad) {
+    dL_dcampos[0] += -dL_dmean.x;
+    dL_dcampos[1] += -dL_dmean.y;
+    dL_dcampos[2] += -dL_dmean.z;
+  }
   // Gradients of loss w.r.t. Gaussian means, but only the portion 
   // that is caused because the mean affects the view-dependent color.
   // Additional mean gradient is accumulated in below methods.
@@ -155,7 +156,8 @@ __global__ void computeCov2DCUDA(int P,
   const float* dL_dconics,
   float3* dL_dmeans,
   float* dL_dcov,
-  float* dL_dviewmatrix)
+  float* dL_dviewmatrix,
+  const float enable_cov_grad)
 {
   auto idx = cg::this_grid().thread_rank();
   if (idx >= P || !(radii[idx] > 0))
@@ -259,16 +261,18 @@ __global__ void computeCov2DCUDA(int P,
   float dL_dJ11 = W[1][0] * dL_dT10 + W[1][1] * dL_dT11 + W[1][2] * dL_dT12;
   float dL_dJ12 = W[2][0] * dL_dT10 + W[2][1] * dL_dT11 + W[2][2] * dL_dT12;
 
-  // Notably the glm::mat multiply order is transposed 
-  dL_dviewmatrix[0] += J[0][0] * dL_dT00 + J[1][0] * dL_dT10; // W[0][0]
-  dL_dviewmatrix[4] += J[0][0] * dL_dT01 + J[1][0] * dL_dT11; // W[0][1]
-  dL_dviewmatrix[8] += J[0][0] * dL_dT02 + J[1][0] * dL_dT12; // W[0][2]
-  dL_dviewmatrix[1] += J[0][1] * dL_dT00 + J[1][1] * dL_dT10; // W[1][0]
-  dL_dviewmatrix[5] += J[0][1] * dL_dT01 + J[1][1] * dL_dT11; // W[1][1]
-  dL_dviewmatrix[9] += J[0][1] * dL_dT02 + J[1][1] * dL_dT12; // W[1][2]
-  dL_dviewmatrix[2] += J[0][2] * dL_dT00 + J[1][2] * dL_dT10; // W[2][0]
-  dL_dviewmatrix[6] += J[0][2] * dL_dT01 + J[1][2] * dL_dT11; // W[2][1]
-  dL_dviewmatrix[10] += J[0][2] * dL_dT02 + J[1][2] * dL_dT12; // W[2][2]
+  if(enable_cov_grad) {
+    // Notably the glm::mat multiply order is transposed 
+    dL_dviewmatrix[0] += J[0][0] * dL_dT00 + J[1][0] * dL_dT10; // W[0][0]
+    dL_dviewmatrix[4] += J[0][0] * dL_dT01 + J[1][0] * dL_dT11; // W[0][1]
+    dL_dviewmatrix[8] += J[0][0] * dL_dT02 + J[1][0] * dL_dT12; // W[0][2]
+    dL_dviewmatrix[1] += J[0][1] * dL_dT00 + J[1][1] * dL_dT10; // W[1][0]
+    dL_dviewmatrix[5] += J[0][1] * dL_dT01 + J[1][1] * dL_dT11; // W[1][1]
+    dL_dviewmatrix[9] += J[0][1] * dL_dT02 + J[1][1] * dL_dT12; // W[1][2]
+    dL_dviewmatrix[2] += J[0][2] * dL_dT00 + J[1][2] * dL_dT10; // W[2][0]
+    dL_dviewmatrix[6] += J[0][2] * dL_dT01 + J[1][2] * dL_dT11; // W[2][1]
+    dL_dviewmatrix[10] += J[0][2] * dL_dT02 + J[1][2] * dL_dT12; // W[2][2]
+  }
 
   float tz = 1.f / t.z;
   float tz2 = tz * tz;
@@ -288,18 +292,20 @@ __global__ void computeCov2DCUDA(int P,
   // Additional mean gradient is accumulated in BACKWARD::preprocess.
   dL_dmeans[idx] = dL_dmean;
 
-  dL_dviewmatrix[0] += dL_dtx * mean.x;
-  dL_dviewmatrix[1] += dL_dty * mean.x;
-  dL_dviewmatrix[2] += dL_dtz * mean.x;
-  dL_dviewmatrix[4] += dL_dtx * mean.y;
-  dL_dviewmatrix[5] += dL_dty * mean.y;
-  dL_dviewmatrix[6] += dL_dtz * mean.y;
-  dL_dviewmatrix[8] += dL_dtx * mean.z;
-  dL_dviewmatrix[9] += dL_dty * mean.z;
-  dL_dviewmatrix[10] += dL_dtz * mean.z;
-  dL_dviewmatrix[12] += dL_dtx;
-  dL_dviewmatrix[13] += dL_dty;
-  dL_dviewmatrix[14] += dL_dtz;
+  if(enable_cov_grad) {
+    dL_dviewmatrix[0] += dL_dtx * mean.x;
+    dL_dviewmatrix[1] += dL_dty * mean.x;
+    dL_dviewmatrix[2] += dL_dtz * mean.x;
+    dL_dviewmatrix[4] += dL_dtx * mean.y;
+    dL_dviewmatrix[5] += dL_dty * mean.y;
+    dL_dviewmatrix[6] += dL_dtz * mean.y;
+    dL_dviewmatrix[8] += dL_dtx * mean.z;
+    dL_dviewmatrix[9] += dL_dty * mean.z;
+    dL_dviewmatrix[10] += dL_dtz * mean.z;
+    dL_dviewmatrix[12] += dL_dtx;
+    dL_dviewmatrix[13] += dL_dty;
+    dL_dviewmatrix[14] += dL_dtz;
+  }
 }
 
 // Backward pass for the conversion of scale and rotation to a 
@@ -449,7 +455,8 @@ __global__ void preprocessCUDA(
   glm::vec4* dL_drot,
   float* dL_dviewmatrix,
   float* dL_dprojmatrix,
-  float* dL_dcampos)
+  float* dL_dcampos, 
+  const bool enable_sh_grad)
 {
   auto idx = cg::this_grid().thread_rank();
   if (idx >= P || !(radii[idx] > 0))
@@ -512,7 +519,7 @@ __global__ void preprocessCUDA(
 
   // Compute gradient updates due to computing colors from SHs
   if (shs)
-    computeColorFromSH(idx, D, M, (glm::vec3*)means, *campos, shs, clamped, (glm::vec3*)dL_dcolor, (glm::vec3*)dL_dmeans, (glm::vec3*)dL_dsh, dL_dcampos);
+    computeColorFromSH(idx, D, M, (glm::vec3*)means, *campos, shs, clamped, (glm::vec3*)dL_dcolor, (glm::vec3*)dL_dmeans, (glm::vec3*)dL_dsh, dL_dcampos, enable_sh_grad);
 
   // Compute gradient updates due to computing covariance from scale/rotation
   if (scales)
@@ -794,7 +801,9 @@ void BACKWARD::preprocess(
   glm::vec4* dL_drot,
   float* dL_dviewmatrix,
   float* dL_dprojmatrix,
-  float* dL_dcampos)
+  float* dL_dcampos,
+  const bool enable_cov_grad,
+  const bool enable_sh_grad)
 {
   // Propagate gradients for the path of 2D conic matrix computation. 
   // Somewhat long, thus it is its own kernel rather than being part of 
@@ -813,7 +822,8 @@ void BACKWARD::preprocess(
     dL_dconic,
     (float3*)dL_dmean3D,
     dL_dcov3D,
-    dL_dviewmatrix);
+    dL_dviewmatrix,
+    enable_cov_grad);
 
   // Propagate gradients for remaining steps: finish 3D mean gradients,
   // propagate color gradients to SH (if desireD), propagate 3D covariance
@@ -843,7 +853,8 @@ void BACKWARD::preprocess(
     dL_drot,
     dL_dviewmatrix,
     dL_dprojmatrix,
-    dL_dcampos);
+    dL_dcampos,
+    enable_sh_grad);
 }
 
 void BACKWARD::render(
