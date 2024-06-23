@@ -23,7 +23,7 @@ rendered_image, rendered_depth, rendered_norm, rendered_alpha, radii, extra = ra
     opacities = opacity,
     scales = scales,
     rotations = rotations,
-    cov3D_precomp = cov3D_precomp,
+    cov3Ds_precomp = cov3D_precomp,
     extra_attrs = extra_attrs
 )
 ```
